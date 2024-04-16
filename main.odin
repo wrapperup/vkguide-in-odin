@@ -682,44 +682,6 @@ main_loop :: proc(engine: ^VulkanEngine) {
 	}
 }
 
-transition_image :: proc(
-	cmd: vk.CommandBuffer,
-	image: vk.Image,
-	current_layout: vk.ImageLayout,
-	new_layout: vk.ImageLayout,
-) {
-	image_barrier := vk.ImageMemoryBarrier2 {
-		sType         = .MEMORY_BARRIER_2,
-		srcStageMask  = {.ALL_COMMANDS},
-		srcAccessMask = {.MEMORY_WRITE},
-		dstStageMask  = {.ALL_COMMANDS},
-		dstAccessMask = {.MEMORY_WRITE | .MEMORY_READ},
-		oldLayout     = current_layout,
-		newLayout     = new_layout,
-	}
-
-	aspect_mask: vk.ImageAspectFlags = (new_layout == .ATTACHMENT_OPTIMAL) ? {.DEPTH} : {.COLOR}
-
-	sub_image := vk.ImageSubresourceRange {
-		aspectMask     = aspect_mask,
-		baseMipLevel   = 0,
-		levelCount     = vk.REMAINING_MIP_LEVELS,
-		baseArrayLayer = 0,
-		layerCount     = vk.REMAINING_ARRAY_LAYERS,
-	}
-
-	image_barrier.subresourceRange = sub_image
-	image_barrier.image = image
-
-	dep_info := vk.DependencyInfo {
-		sType                   = .DEPENDENCY_INFO,
-		imageMemoryBarrierCount = 1,
-		pImageMemoryBarriers    = &image_barrier,
-	}
-
-	vk.CmdPipelineBarrier2(cmd, &dep_info)
-}
-
 draw :: proc(engine: ^VulkanEngine) {
 	vk_check(vk.WaitForFences(engine.device, 1, &current_frame(engine).render_fence, true, 1_000_000_000))
 	vk_check(vk.ResetFences(engine.device, 1, &current_frame(engine).render_fence))
