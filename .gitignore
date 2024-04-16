@@ -1,0 +1,9 @@
+.vs/
+
+build/
+
+*.exe
+*.dll
+*.lib
+*.exp
+*.raddbgi

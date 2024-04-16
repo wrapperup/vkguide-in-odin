@@ -1,0 +1,6 @@
+[submodule "deps/odin-imgui"]
+	path = deps/odin-imgui
+	url = https://gitlab.com/L-4/odin-imgui
+[submodule "deps/odin-vma"]
+	path = deps/odin-vma
+	url = https://github.com/DanielGavin/odin-vma
