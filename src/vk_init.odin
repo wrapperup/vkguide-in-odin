@@ -111,3 +111,79 @@ init_submit_info :: proc(
 
 	return info
 }
+
+init_image_create_info :: proc(
+	format: vk.Format,
+	usage_flags: vk.ImageUsageFlags,
+	extent: vk.Extent3D,
+) -> vk.ImageCreateInfo {
+	info := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		imageType   = .D2,
+		format      = format,
+		extent      = extent,
+		mipLevels   = 1,
+		arrayLayers = 1,
+		samples     = {._1},
+		tiling      = .OPTIMAL,
+		usage       = usage_flags,
+	}
+
+	return info
+}
+
+init_imageview_create_info :: proc(
+	format: vk.Format,
+	image: vk.Image,
+	aspect_flags: vk.ImageAspectFlags,
+) -> vk.ImageViewCreateInfo {
+	info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		viewType = .D2,
+		image = image,
+		format = format,
+		subresourceRange =  {
+			baseMipLevel = 0,
+			levelCount = 1,
+			baseArrayLayer = 0,
+			layerCount = 1,
+			aspectMask = aspect_flags,
+		},
+	}
+
+	return info
+}
+
+init_attachment_info :: proc(
+	view: vk.ImageView,
+	clear: ^vk.ClearValue,
+	layout: vk.ImageLayout,
+) -> vk.RenderingAttachmentInfo {
+	color_attachment := vk.RenderingAttachmentInfo {
+		sType       = .RENDERING_ATTACHMENT_INFO,
+		imageView   = view,
+		imageLayout = layout,
+		loadOp      = clear != nil ? .CLEAR : .LOAD,
+		storeOp     = .STORE,
+		clearValue  = clear != nil ? clear^ : {},
+	}
+
+	return color_attachment
+}
+
+init_rendering_info :: proc(
+	area: vk.Extent2D,
+	color_attachment: ^vk.RenderingAttachmentInfo,
+	depth_attachment: ^vk.RenderingAttachmentInfo,
+) -> vk.RenderingInfo {
+	info := vk.RenderingInfo {
+		sType = .RENDERING_INFO,
+		layerCount = 1,
+		renderArea = {extent = area},
+		pDepthAttachment = depth_attachment,
+		pColorAttachments = color_attachment,
+		colorAttachmentCount = 1,
+	}
+
+	return info
+}

@@ -1,1 +1,1 @@
-odin run . -collection:deps=deps -debug
+odin build src -out:build/main.exe -collection:deps=deps -debug
