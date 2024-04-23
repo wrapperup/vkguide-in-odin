@@ -12,10 +12,10 @@ import vma "deps:odin-vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+import hlsl "core:math/linalg/hlsl"
+import im "deps:odin-imgui"
 import im_glfw "deps:odin-imgui/imgui_impl_glfw"
 import im_vk "deps:odin-imgui/imgui_impl_vulkan"
-import im "deps:odin-imgui"
-
 
 VulkanEngine :: struct {
 	debug_messenger:              vk.DebugUtilsMessengerEXT,
@@ -60,94 +60,11 @@ VulkanEngine :: struct {
 	imm_fence:                    vk.Fence,
 	imm_command_buffer:           vk.CommandBuffer,
 	imm_command_pool:             vk.CommandPool,
+
+	// Background effects
+	background_effects:           [dynamic]ComputeEffect,
+	current_background_effect:    i32,
 }
-
-immediate_submit :: proc(engine: ^VulkanEngine, procedure: proc(_: vk.CommandBuffer)) {
-	vk_check(vk.ResetFences(engine.device, 1, &engine.imm_fence));
-	vk_check(vk.ResetCommandBuffer(engine.imm_command_buffer, {}));
-
-	cmd := engine.imm_command_buffer
-
-	cmd_begin_info := init_command_buffer_begin_info({.ONE_TIME_SUBMIT});
-
-	vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info));
-
-	procedure(cmd);
-
-	vk_check(vk.EndCommandBuffer(cmd));
-
-	cmd_info := init_command_buffer_submit_info(cmd);
-	submit := init_submit_info(&cmd_info, nil, nil);
-
-	// submit command buffer to the queue and execute it.
-	//  _renderFence will now block until the graphic commands finish execution
-	vk_check(vk.QueueSubmit2(engine.graphics_queue, 1, &submit, engine.imm_fence));
-
-	vk_check(vk.WaitForFences(engine.device, 1, &engine.imm_fence, true, 9_999_999_999));
-}
-
-init_imgui :: proc(engine: ^VulkanEngine) {
-	pool_sizes := []vk.DescriptorPoolSize {
-		{ .SAMPLER, 1000 },
-		{ .COMBINED_IMAGE_SAMPLER, 1000 },
-		{ .SAMPLED_IMAGE, 1000 },
-		{ .STORAGE_IMAGE, 1000 },
-		{ .UNIFORM_TEXEL_BUFFER, 1000 },
-		{ .STORAGE_TEXEL_BUFFER, 1000 },
-		{ .UNIFORM_BUFFER, 1000 },
-		{ .STORAGE_BUFFER, 1000 },
-		{ .UNIFORM_BUFFER_DYNAMIC, 1000 },
-		{ .STORAGE_BUFFER_DYNAMIC, 1000 },
-		{ .INPUT_ATTACHMENT, 1000 },
-	}
-
-	pool_info := vk.DescriptorPoolCreateInfo {sType = .DESCRIPTOR_POOL_CREATE_INFO}
-	pool_info.flags = {.FREE_DESCRIPTOR_SET};
-	pool_info.maxSets = 1_000;
-	pool_info.poolSizeCount = u32(len(pool_sizes));
-	pool_info.pPoolSizes = raw_data(pool_sizes);
-
-	im_pool: vk.DescriptorPool
-	vk_check(vk.CreateDescriptorPool(engine.device, &pool_info, nil, &im_pool));
-
-	// 2: initialize imgui library
-
-	// this initializes the core structures of imgui
-	im.CreateContext();
-
-	// this initializes imgui for glfw
-	im_glfw.InitForVulkan(engine.window, true)
-
-	// this initializes imgui for Vulkan
-	init_info := im_vk.InitInfo {}
-	init_info.Instance = engine.instance;
-	init_info.PhysicalDevice = engine.physical_device;
-	init_info.Device = engine.device;
-	init_info.Queue = engine.graphics_queue;
-	init_info.DescriptorPool = im_pool;
-	init_info.MinImageCount = 3;
-	init_info.ImageCount = 3;
-	init_info.UseDynamicRendering = true;
-	init_info.ColorAttachmentFormat = engine.swapchain_image_format;
-	init_info.MSAASamples = {._1};
-
-	// We've already loaded the funcs with Odin's built-in loader,
-	// imgui needs the addresses of those functions now.
-	im_vk.LoadFunctions(proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
-		return vk.GetInstanceProcAddr((cast(^vk.Instance)user_data)^, function_name)
-	}, &engine.instance)
-
-	im_vk.Init(&init_info, 0)
-
-	// execute a gpu command to upload imgui font textures
-	// newer version of imgui automatically creates a command buffer,
-	// and destroys the upload data, so we don't actually need to do anything else.
-	im_vk.CreateFontsTexture()
-
-	// defer imgui cleanup
-	push_deletion_queue(&engine.deletion_queue, im_pool)
-}
-
 
 FrameData :: struct {
 	swapchain_semaphore, render_semaphore: vk.Semaphore,
@@ -161,6 +78,109 @@ SwapChainSupportDetails :: struct {
 	capabilities:  vk.SurfaceCapabilitiesKHR,
 	formats:       []vk.SurfaceFormatKHR,
 	present_modes: []vk.PresentModeKHR,
+}
+
+ComputePushConstants :: struct {
+	data_1: hlsl.float4,
+	data_2: hlsl.float4,
+	data_3: hlsl.float4,
+	data_4: hlsl.float4,
+}
+
+ComputeEffect :: struct {
+	name:            string,
+	pipeline:        vk.Pipeline,
+	pipeline_layout: vk.PipelineLayout,
+	data:            ComputePushConstants,
+}
+
+
+immediate_submit :: proc(engine: ^VulkanEngine, procedure: proc(_: vk.CommandBuffer)) {
+	vk_check(vk.ResetFences(engine.device, 1, &engine.imm_fence))
+	vk_check(vk.ResetCommandBuffer(engine.imm_command_buffer, {}))
+
+	cmd := engine.imm_command_buffer
+
+	cmd_begin_info := init_command_buffer_begin_info({.ONE_TIME_SUBMIT})
+
+	vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info))
+
+	procedure(cmd)
+
+	vk_check(vk.EndCommandBuffer(cmd))
+
+	cmd_info := init_command_buffer_submit_info(cmd)
+	submit := init_submit_info(&cmd_info, nil, nil)
+
+	// submit command buffer to the queue and execute it.
+	//  _renderFence will now block until the graphic commands finish execution
+	vk_check(vk.QueueSubmit2(engine.graphics_queue, 1, &submit, engine.imm_fence))
+
+	vk_check(vk.WaitForFences(engine.device, 1, &engine.imm_fence, true, 9_999_999_999))
+}
+
+init_imgui :: proc(engine: ^VulkanEngine) {
+	pool_sizes := []vk.DescriptorPoolSize {
+		{.SAMPLER, 1000},
+		{.COMBINED_IMAGE_SAMPLER, 1000},
+		{.SAMPLED_IMAGE, 1000},
+		{.STORAGE_IMAGE, 1000},
+		{.UNIFORM_TEXEL_BUFFER, 1000},
+		{.STORAGE_TEXEL_BUFFER, 1000},
+		{.UNIFORM_BUFFER, 1000},
+		{.STORAGE_BUFFER, 1000},
+		{.UNIFORM_BUFFER_DYNAMIC, 1000},
+		{.STORAGE_BUFFER_DYNAMIC, 1000},
+		{.INPUT_ATTACHMENT, 1000},
+	}
+
+	pool_info := vk.DescriptorPoolCreateInfo {
+		sType = .DESCRIPTOR_POOL_CREATE_INFO,
+	}
+	pool_info.flags = {.FREE_DESCRIPTOR_SET}
+	pool_info.maxSets = 1_000
+	pool_info.poolSizeCount = u32(len(pool_sizes))
+	pool_info.pPoolSizes = raw_data(pool_sizes)
+
+	im_pool: vk.DescriptorPool
+	vk_check(vk.CreateDescriptorPool(engine.device, &pool_info, nil, &im_pool))
+
+	// 2: initialize imgui library
+
+	// this initializes the core structures of imgui
+	im.CreateContext()
+
+	// this initializes imgui for glfw
+	im_glfw.InitForVulkan(engine.window, true)
+
+	// this initializes imgui for Vulkan
+	init_info := im_vk.InitInfo{}
+	init_info.Instance = engine.instance
+	init_info.PhysicalDevice = engine.physical_device
+	init_info.Device = engine.device
+	init_info.Queue = engine.graphics_queue
+	init_info.DescriptorPool = im_pool
+	init_info.MinImageCount = 3
+	init_info.ImageCount = 3
+	init_info.UseDynamicRendering = true
+	init_info.ColorAttachmentFormat = engine.swapchain_image_format
+	init_info.MSAASamples = {._1}
+
+	// We've already loaded the funcs with Odin's built-in loader,
+	// imgui needs the addresses of those functions now.
+	im_vk.LoadFunctions(proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
+			return vk.GetInstanceProcAddr((cast(^vk.Instance)user_data)^, function_name)
+		}, &engine.instance)
+
+	im_vk.Init(&init_info, 0)
+
+	// execute a gpu command to upload imgui font textures
+	// newer version of imgui automatically creates a command buffer,
+	// and destroys the upload data, so we don't actually need to do anything else.
+	im_vk.CreateFontsTexture()
+
+	// defer imgui cleanup
+	push_deletion_queue(&engine.deletion_queue, im_pool)
 }
 
 current_frame :: proc(engine: ^VulkanEngine) -> ^FrameData {
@@ -415,7 +435,7 @@ debug_callback :: proc "system" (
 	user_data: rawptr,
 ) -> b32 {
 	context = runtime.default_context()
-	fmt.eprintln("validation layer:", callback_data.pMessage)
+	fmt.println(callback_data.pMessage)
 
 	return false
 }
@@ -425,7 +445,7 @@ setup_debug_messenger :: proc(engine: ^VulkanEngine) {
 		fmt.println("Creating Debug Messenger")
 		create_info := vk.DebugUtilsMessengerCreateInfoEXT {
 			sType           = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-			messageSeverity = {.VERBOSE, .WARNING},
+			messageSeverity = {.VERBOSE, .WARNING, .INFO},
 			messageType     = {.GENERAL, .VALIDATION},
 			pfnUserCallback = debug_callback,
 			pUserData       = nil,
@@ -506,15 +526,21 @@ create_instance :: proc(engine: ^VulkanEngine) -> bool {
 	create_info.enabledExtensionCount = cast(u32)len(extensions)
 
 	debug_create_info := vk.DebugUtilsMessengerCreateInfoEXT{}
+	validation_features := vk.ValidationFeaturesEXT{
+		sType = .VALIDATION_FEATURES_EXT,
+		pEnabledValidationFeatures = raw_data(VALIDATION_FEATURES),
+		enabledValidationFeatureCount = u32(len(VALIDATION_LAYERS)),
+	}
+
 	if ENABLE_VALIDATION_LAYERS {
-		fmt.println("yeaaa")
 		create_info.enabledLayerCount = u32(len(VALIDATION_LAYERS))
 		create_info.ppEnabledLayerNames = raw_data(VALIDATION_LAYERS)
 
 		debug_create_info.sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT
-		debug_create_info.messageSeverity = {.WARNING, .ERROR}
+		debug_create_info.messageSeverity = {.WARNING, .ERROR, .INFO}
 		debug_create_info.messageType = {.GENERAL, .VALIDATION, .PERFORMANCE}
 		debug_create_info.pfnUserCallback = debug_callback
+		debug_create_info.pNext = &validation_features
 
 		create_info.pNext = &debug_create_info
 	} else {
@@ -615,12 +641,12 @@ init_commands :: proc(engine: ^VulkanEngine) {
 		vk_check(vk.AllocateCommandBuffers(engine.device, &cmd_alloc_info, &engine.frames[i].main_command_buffer))
 	}
 
-	vk_check(vk.CreateCommandPool(engine.device, &command_pool_info, nil, &engine.imm_command_pool));
+	vk_check(vk.CreateCommandPool(engine.device, &command_pool_info, nil, &engine.imm_command_pool))
 
 	// allocate the command buffer for immediate submits
-	cmd_alloc_info := init_command_buffer_allocate_info(engine.imm_command_pool, 1);
+	cmd_alloc_info := init_command_buffer_allocate_info(engine.imm_command_pool, 1)
 
-	vk_check(vk.AllocateCommandBuffers(engine.device, &cmd_alloc_info, &engine.imm_command_buffer));
+	vk_check(vk.AllocateCommandBuffers(engine.device, &cmd_alloc_info, &engine.imm_command_buffer))
 
 	push_deletion_queue(&engine.deletion_queue, engine.imm_command_pool)
 }
@@ -784,24 +810,36 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) {
 	// TODO: ensure last write is updated
 	is_shaders_updated()
 
+	push_constant := vk.PushConstantRange {
+		offset     = 0,
+		size       = size_of(ComputePushConstants),
+		stageFlags = {.COMPUTE},
+	}
+
 	info := vk.PipelineLayoutCreateInfo {
-		sType          = .PIPELINE_LAYOUT_CREATE_INFO,
-		pSetLayouts    = &engine.draw_image_descriptor_layout,
-		setLayoutCount = 1,
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		pSetLayouts            = &engine.draw_image_descriptor_layout,
+		setLayoutCount         = 1,
+		pPushConstantRanges    = &push_constant,
+		pushConstantRangeCount = 1,
 	}
 
 	vk.CreatePipelineLayout(engine.device, &info, nil, &engine.gradient_pipeline_layout)
 
-	compute_draw_shader, ok := util_load_shader_module("./shaders/out/gradient.comp.spv", engine.device)
+	gradient_shader, gradient_ok := util_load_shader_module("./shaders/out/gradient_color.comp.spv", engine.device)
+	if !gradient_ok {
+		fmt.eprintln("Error when building the gradient shader")
+	}
 
-	if !ok {
-		fmt.eprintln("Error when building the compute shader")
+	sky_shader, sky_ok := util_load_shader_module("./shaders/out/sky.comp.spv", engine.device)
+	if !sky_ok {
+		fmt.eprintln("Error when building the sky shader")
 	}
 
 	stage_info := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.COMPUTE},
-		module = compute_draw_shader,
+		module = gradient_shader,
 		pName  = "main",
 	}
 
@@ -811,14 +849,38 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) {
 		stage  = stage_info,
 	}
 
-	vk_check(
-		vk.CreateComputePipelines(engine.device, 0, 1, &compute_pipeline_create_info, nil, &engine.gradient_pipeline),
-	)
+	// Gradient pipelines
 
-	vk.DestroyShaderModule(engine.device, compute_draw_shader, nil)
+	gradient := ComputeEffect {
+		name = "gradient",
+		data = {data_1 = {1, 0, 0, 1}, data_2 = {0, 0, 1, 1}},
+		pipeline_layout = engine.gradient_pipeline_layout,
+	}
+
+	vk_check(vk.CreateComputePipelines(engine.device, 0, 1, &compute_pipeline_create_info, nil, &gradient.pipeline))
+
+	// Sky pipelines
+
+	compute_pipeline_create_info.stage.module = sky_shader
+
+	sky := ComputeEffect {
+		name = "sky",
+		data = {data_1 = {0.1, 0.2, 0.4, 0.97}},
+		pipeline_layout = engine.gradient_pipeline_layout,
+	}
+
+	vk_check(vk.CreateComputePipelines(engine.device, 0, 1, &compute_pipeline_create_info, nil, &sky.pipeline))
+
+	append(&engine.background_effects, gradient)
+	append(&engine.background_effects, sky)
+
+	vk.DestroyShaderModule(engine.device, gradient_shader, nil)
+	vk.DestroyShaderModule(engine.device, sky_shader, nil)
 
 	push_deletion_queue(&engine.deletion_queue, engine.gradient_pipeline_layout)
-	push_deletion_queue(&engine.deletion_queue, engine.gradient_pipeline)
+
+	push_deletion_queue(&engine.deletion_queue, gradient.pipeline)
+	push_deletion_queue(&engine.deletion_queue, sky.pipeline)
 }
 
 init_vulkan :: proc(engine: ^VulkanEngine) -> bool {
@@ -894,6 +956,7 @@ cleanup_vulkan :: proc(engine: ^VulkanEngine) {
 
 	delete(engine.swapchain_image_views)
 	delete(engine.swapchain_images)
+	delete(engine.background_effects)
 
 	vk.DestroySwapchainKHR(engine.device, engine.swapchain, nil)
 	vk.DestroyDevice(engine.device, nil)
@@ -904,16 +967,36 @@ cleanup_vulkan :: proc(engine: ^VulkanEngine) {
 }
 
 main_loop :: proc(engine: ^VulkanEngine) {
+	io := im.GetIO()
+
 	for (!glfw.WindowShouldClose(engine.window)) {
 		glfw.PollEvents()
 
 		im_vk.NewFrame()
 		im_glfw.NewFrame()
 		im.NewFrame()
-
-		im.ShowDemoWindow()
+		
+		if (im.Begin("background")) {
+			selected := &engine.background_effects[engine.current_background_effect];
+		
+			im.Text("Selected effect: ", selected.name);
+		
+			im.SliderInt("Effect Index", &engine.current_background_effect, 0, i32(len(engine.background_effects)) - 1);
+		
+			im.InputFloat4("data1", cast(^[4]f32)(&selected.data.data_1))
+			im.InputFloat4("data2", cast(^[4]f32)(&selected.data.data_2))
+			im.InputFloat4("data3", cast(^[4]f32)(&selected.data.data_3))
+			im.InputFloat4("data4", cast(^[4]f32)(&selected.data.data_4))
+		
+			im.End();
+		}
 
 		im.Render()
+
+		if .DockingEnable in io.ConfigFlags {
+			im.UpdatePlatformWindows()
+			im.RenderPlatformWindowsDefault()
+		}
 
 		draw(engine)
 	}
@@ -941,8 +1024,10 @@ draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	vk.CmdClearColorImage(cmd, engine.draw_image.image, .GENERAL, &clear_color, 1, &clear_range)
 
+	effect := &engine.background_effects[engine.current_background_effect]
+
 	// bind the gradient drawing compute pipeline
-	vk.CmdBindPipeline(cmd, .COMPUTE, engine.gradient_pipeline)
+	vk.CmdBindPipeline(cmd, .COMPUTE, effect.pipeline)
 
 	// bind the descriptor set containing the draw image for the compute pipeline
 	vk.CmdBindDescriptorSets(
@@ -955,6 +1040,8 @@ draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		0,
 		nil,
 	)
+
+	vk.CmdPushConstants(cmd, engine.gradient_pipeline_layout, {.COMPUTE}, 0, size_of(ComputePushConstants), &effect.data)
 
 	// execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
 	vk.CmdDispatch(
@@ -1043,13 +1130,23 @@ draw :: proc(engine: ^VulkanEngine) {
 	)
 
 	// set swapchain image layout to Attachment Optimal so we can draw it
-	util_transition_image(cmd, engine.swapchain_images[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL);
+	util_transition_image(
+		cmd,
+		engine.swapchain_images[swapchain_image_index],
+		.TRANSFER_DST_OPTIMAL,
+		.COLOR_ATTACHMENT_OPTIMAL,
+	)
 
 	//draw imgui into the swapchain image
-	draw_imgui(engine, cmd, engine.swapchain_image_views[swapchain_image_index]);
+	draw_imgui(engine, cmd, engine.swapchain_image_views[swapchain_image_index])
 
 	// set swapchain image layout to Present so we can show it on the screen
-	util_transition_image(cmd, engine.swapchain_images[swapchain_image_index], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR)
+	util_transition_image(
+		cmd,
+		engine.swapchain_images[swapchain_image_index],
+		.COLOR_ATTACHMENT_OPTIMAL,
+		.PRESENT_SRC_KHR,
+	)
 
 	//finalize the command buffer (we can no longer add commands, but it can now be executed)
 	vk_check(vk.EndCommandBuffer(cmd))

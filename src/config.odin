@@ -28,9 +28,17 @@ REQUIRED_VK_13_FEATURES := vk.PhysicalDeviceVulkan13Features {
 }
 
 // Set required extensions to support.
-DEVICE_EXTENSIONS := []cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME}
+DEVICE_EXTENSIONS := []cstring {
+	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
+	vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+	vk.KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+}
 
+// Set validation layers to enable.
 VALIDATION_LAYERS := []cstring{"VK_LAYER_KHRONOS_validation"}
+
+// Set validation features to enable.
+VALIDATION_FEATURES := []vk.ValidationFeatureEnableEXT{.DEBUG_PRINTF}
 
 when ODIN_DEBUG {
 	ENABLE_VALIDATION_LAYERS := true
@@ -38,4 +46,5 @@ when ODIN_DEBUG {
 	ENABLE_VALIDATION_LAYERS := false
 }
 
+// Number of frames to provide in flight.
 FRAME_OVERLAP :: 2
