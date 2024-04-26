@@ -4,6 +4,17 @@ import "core:mem"
 import vma "deps:odin-vma"
 import vk "vendor:vulkan"
 
+// The deletion queue is implemented a bit differently to the one found
+// in vkguide. Since Odin doesn't have convenient lambdas, and since Vulkan
+// handles are (usually) all 64-bit pointers/handles, we can generalize an API
+// that has similar ergonomics.
+//
+// The API usage is simpler: Just pass the handle instead of
+// a lambda/procedure. If you allocated with VMA, you can also
+// pass in the allocation.
+//
+// The deletion queue is now basically a (crappy) state machine.
+
 DeletionQueue :: struct {
 	resource_del_queue: [dynamic]ResourceHandle,
 }

@@ -1,5 +1,6 @@
 {
     "collections": [
 		{ "name": "deps", "path": "./deps" }
-	]
+	],
+    "enable_fake_methods": true
 }
